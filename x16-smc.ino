@@ -2,7 +2,7 @@
 //
 // By: Kevin Williams - TexElec.com
 //     Michael Steil
-//     Joseph Burks
+//     Joe Burks
 
 #include <OneButton.h>
 #include <Wire.h>
