@@ -8,7 +8,7 @@
 #include <Wire.h>
 
 // Important: You need to turn OFF DEBUG in order for the i2c communication to work reliably!
-#define DEBUG
+//#define DEBUG
 #define SERIAL_BPS 115200
 
 #if defined(__AVR_ATtiny861__)
@@ -37,13 +37,13 @@ ATTINY861 Pinout
 #define I2C_SDA_PIN        8
 #define I2C_SCL_PIN       10
 
-#define PS2_KBD_CLK       12
+#define PS2_KBD_CLK       2
 #define PS2_KBD_DAT       11
 #define PS2_MSE_CLK       14
 #define PS2_MSE_DAT       13
 
 #define NMI_BUTTON_PIN     3
-#define RESET_BUTTON_PIN   2
+#define RESET_BUTTON_PIN   12
 #define POWER_BUTTON_PIN   4
 
 #define RESB_PIN          0
@@ -125,10 +125,13 @@ OneButton POW_BUT(POWER_BUTTON_PIN, true, true);
 OneButton RES_BUT(RESET_BUTTON_PIN, true, true);
 OneButton NMI_BUT(NMI_BUTTON_PIN, true, true);
 
-PS2Port<> Keyboard(PS2_KBD_CLK, PS2_KBD_DAT);
-PS2Port<> Mouse(PS2_MSE_CLK, PS2_MSE_DAT);
+PS2Port<PS2_KBD_CLK, PS2_KBD_DAT, 16> Keyboard;
+PS2Port<PS2_MSE_CLK, PS2_MSE_DAT, 4> Mouse;
+
+volatile uint8_t kbd_int_toggle = 0;
 
 void keyboardClockIrq() {
+  kbd_int_toggle ^= 1;
 	Keyboard.onFallingClock();
 }
 
@@ -178,6 +181,8 @@ void setup() {
 	Mouse.begin(mouseClockIrq);
 }
 
+uint16_t LED_last_on_ms = 0;
+
 void loop() {
 	POW_BUT.tick();								// Check Button Status
 	RES_BUT.tick();
@@ -189,6 +194,12 @@ void loop() {
 		//kill power if PWR_OK dies, and system on
 		//error handling?
 	}
+  //uint16_t cur_millis = millis();
+  if (Keyboard.available()) {
+    analogWrite(ACT_LED, 255);
+  } else {
+    analogWrite(ACT_LED, 0);
+  }
 	delay(10);									// Short Delay, required by OneButton if code is short
 }
 
@@ -270,6 +281,8 @@ void I2C_Send() {
    	// DBG_PRINTLN("I2C_Send");
     int nextKey = 0;
     if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
+      //LED_last_on_ms = millis();
+      //analogWrite(ACT_LED, 255);
 //     DBG_PRINTLN("Reg 7");
         if (Keyboard.available()) {
             nextKey  = Keyboard.next();
@@ -284,7 +297,8 @@ void I2C_Send() {
 
 }
 
-void Reset_Button_Hold() {			
+void Reset_Button_Hold() {
+  Keyboard.flush();
 	if (SYSTEM_POWERED == 1) {					// Ignore unless Powered On
 		digitalWrite(RESB_PIN,LOW);				// Press RESET
 		delay(RESB_HOLDTIME);

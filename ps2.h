@@ -6,11 +6,12 @@
 
 /// @brief PS/2 IO Port handler
 /// @tparam size Circular buffer size for incoming data, must be a power of 2 and not more than 256
-template<uint8_t size=64>
+template<int clk, int dat, uint8_t size=8>
 class PS2Port
 {
 	static_assert(size <= 256, "Buffer size may not exceed 256");				// Hard limit on buffer size
 	static_assert((size & (size-1)) == 0, "Buffer size must be a power of 2");	// size must be a power of 2
+  static_assert(digitalPinToInterrupt(clk) != NOT_AN_INTERRUPT);
 
 private:
 	uint8_t clkPin;
@@ -31,8 +32,8 @@ private:
 	};
 
 public:
-	PS2Port(uint8_t clkPin, uint8_t datPin) :
-		clkPin(clkPin), datPin(datPin),
+	PS2Port() :
+		clkPin(clk), datPin(dat),
 		head(0), tail(0), curCode(0), parity(0), lastBitMillis(0), rxBitCount(0) {};
 
 	/// @brief Begin processing PS/2 traffic
@@ -104,7 +105,7 @@ public:
 
 	/// @brief Returns true if at least one byte is available from the PS/2 port
 	bool available() { return head != tail; };
-	
+ 
 	/// @brief Returns the next available byte from the PS/2 port
 	uint8_t next() {
 		uint8_t value = buffer[tail];
@@ -113,4 +114,10 @@ public:
 		}
     return value; 
 	};
+
+  void flush() {
+    head = tail = 0;
+    rxBitCount = 0;
+    lastBitMillis = 0;
+  }
 };
