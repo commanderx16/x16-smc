@@ -194,12 +194,6 @@ void loop() {
 		//kill power if PWR_OK dies, and system on
 		//error handling?
 	}
-  //uint16_t cur_millis = millis();
-  if (Keyboard.available()) {
-    analogWrite(ACT_LED, 255);
-  } else {
-    analogWrite(ACT_LED, 0);
-  }
 	delay(10);									// Short Delay, required by OneButton if code is short
 }
 
@@ -223,16 +217,13 @@ void I2C_Receive(int) {
 	while (Wire.available()) {
 		if (ct<2) {								// read first two bytes only
 			byte c = Wire.read();
-//			DBG_PRINTLN(c, HEX);
 			I2C_Data[ct] = c;
 			ct++;
 		}
 		else {
-			int nothing = Wire.read();			// eat extra data, should not be sent
+			Wire.read();			// eat extra data, should not be sent
 		}
 	}
-//	DBG_PRINT("ct: 0x");
-//	DBG_PRINTLN(ct, HEX);
 	if (ct == 2) {
 		I2C_Process();							// process received cmd
 	}
@@ -246,7 +237,6 @@ void I2C_Receive(int) {
 //0x04 0x00-0xFF - Power LED Level (PWM)		// need to remove, not enough lines 
 //0x05 0x00-0xFF - Activity/HDD LED Level (PWM)
 void I2C_Process() {
-//	DBG_PRINTLN("I2C_Process");
 	if (I2C_Data[0] == 1) {						// 1st Byte : Byte 1 - Power Events (Power off & Reboot)
 		switch (I2C_Data[1]) {
 			case 0:PowerOffSeq();				// 2nd Byte : 0 - Power Off
@@ -281,20 +271,14 @@ void I2C_Send() {
    	// DBG_PRINTLN("I2C_Send");
     int nextKey = 0;
     if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
-      //LED_last_on_ms = millis();
-      //analogWrite(ACT_LED, 255);
-//     DBG_PRINTLN("Reg 7");
         if (Keyboard.available()) {
             nextKey  = Keyboard.next();
-//     DBG_PRINTLN(nextKey);
             Wire.write(nextKey);
         }
         else {
-//     DBG_PRINTLN(0);
             Wire.write(0);
         }        
     }
-
 }
 
 void Reset_Button_Hold() {
