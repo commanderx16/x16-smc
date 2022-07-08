@@ -7,6 +7,7 @@
 #include <OneButton.h>
 #include <Wire.h>
 
+// Important: You need to turn OFF DEBUG in order for the i2c communication to work reliably!
 #define DEBUG
 #define SERIAL_BPS 115200
 
@@ -14,9 +15,7 @@
 #define ATTINY861
 
 /*
-
 ATTINY861 Pinout
-
      AVR Func         X16 Func   ArdIO   Port             Port   ArdIO   X16 Func    AVR Function
                                               ----\_/----
                                              | *         |
@@ -203,12 +202,17 @@ void Power_Button_Press() {
 }
 
 void I2C_Receive(int) {
-	DBG_PRINTLN("I2C_Receive");
+//	DBG_PRINTLN("I2C_Receive");
+    
+    // We are resetting the data beforehand
+	I2C_Data[0] = 0;
+	I2C_Data[1] = 0;
+    
 	int ct=0;
 	while (Wire.available()) {
 		if (ct<2) {								// read first two bytes only
 			byte c = Wire.read();
-			DBG_PRINTLN(c, HEX);
+//			DBG_PRINTLN(c, HEX);
 			I2C_Data[ct] = c;
 			ct++;
 		}
@@ -216,8 +220,8 @@ void I2C_Receive(int) {
 			int nothing = Wire.read();			// eat extra data, should not be sent
 		}
 	}
-	DBG_PRINT("ct: 0x");
-	DBG_PRINTLN(ct, HEX);
+//	DBG_PRINT("ct: 0x");
+//	DBG_PRINTLN(ct, HEX);
 	if (ct == 2) {
 		I2C_Process();							// process received cmd
 	}
@@ -231,7 +235,7 @@ void I2C_Receive(int) {
 //0x04 0x00-0xFF - Power LED Level (PWM)		// need to remove, not enough lines 
 //0x05 0x00-0xFF - Activity/HDD LED Level (PWM)
 void I2C_Process() {
-	DBG_PRINTLN("I2C_Process");
+//	DBG_PRINTLN("I2C_Process");
 	if (I2C_Data[0] == 1) {						// 1st Byte : Byte 1 - Power Events (Power off & Reboot)
 		switch (I2C_Data[1]) {
 			case 0:PowerOffSeq();				// 2nd Byte : 0 - Power Off
@@ -256,15 +260,28 @@ void I2C_Process() {
 	if (I2C_Data[0] == 5) {						// 1st Byte : Byte 5 - Activity LED Level
 		analogWrite(ACT_LED, I2C_Data[1]);		// 2nd Byte : Set Value directly
 	}
-	I2C_Data[0] = 0;
-	I2C_Data[1] = 0;
+
+	if (I2C_Data[0] == 7) {						// 1st Byte : Byte 7 - Keyboard: read next keycode
+        // Nothing to do here. The action is during the I2C_Send that follows this I2C_Receive
+    }
 }
 
-char *hello = "HELLO WORLD!";
-
 void I2C_Send() {
-	DBG_PRINTLN("I2C_Send");
-	Wire.write(hello[I2C_Data[0]] << 1);
+   	// DBG_PRINTLN("I2C_Send");
+    int nextKey = 0;
+    if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
+//     DBG_PRINTLN("Reg 7");
+        if (Keyboard.available()) {
+            nextKey  = Keyboard.next();
+//     DBG_PRINTLN(nextKey);
+            Wire.write(nextKey);
+        }
+        else {
+//     DBG_PRINTLN(0);
+            Wire.write(0);
+        }        
+    }
+
 }
 
 void Reset_Button_Hold() {			

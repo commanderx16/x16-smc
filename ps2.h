@@ -6,7 +6,7 @@
 
 /// @brief PS/2 IO Port handler
 /// @tparam size Circular buffer size for incoming data, must be a power of 2 and not more than 256
-template<uint8_t size=8>
+template<uint8_t size=64>
 class PS2Port
 {
 	static_assert(size <= 256, "Buffer size may not exceed 256");				// Hard limit on buffer size
@@ -89,7 +89,7 @@ public:
 					byte headNext = (head+1) & (size-1);
 					if (headNext != tail)
 					{
-//						keycode[head] = (byte)(curCode);
+						buffer[head] = (byte)(curCode);
 						head = headNext;
 					} // else Ring buffer overrun, drop the incoming code :(
 				DBG_PRINT("keycode: ");
@@ -107,9 +107,10 @@ public:
 	
 	/// @brief Returns the next available byte from the PS/2 port
 	uint8_t next() {
-		uint8_t value = buffer[head];
+		uint8_t value = buffer[tail];
 		if (available()) {
-			head = (head+1) & (size-1);
+			tail = (tail+1) & (size-1);
 		}
+    return value; 
 	};
 };
