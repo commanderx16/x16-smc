@@ -129,201 +129,201 @@ PS2Port<PS2_KBD_CLK, PS2_KBD_DAT, 16> Keyboard;
 PS2Port<PS2_MSE_CLK, PS2_MSE_DAT, 4> Mouse;
 
 void keyboardClockIrq() {
-	Keyboard.onFallingClock();
+    Keyboard.onFallingClock();
 }
 
 void mouseClockIrq() {
-	Mouse.onFallingClock();
+    Mouse.onFallingClock();
 }
 
-bool SYSTEM_POWERED = 0;							 	// default state - Powered off
-int	 I2C_Data[2] = {0, 0};
+bool SYSTEM_POWERED = 0;                                // default state - Powered off
+int  I2C_Data[2] = {0, 0};
 bool I2C_Active = false;
 
 void setup() {
 #if defined(USE_SERIAL_DEBUG)
-	Serial.begin(SERIAL_BPS);
+    Serial.begin(SERIAL_BPS);
 #endif
   DBG_PRINTLN("Commander X16 SMC Start");
-	//initialize i2C
-	Wire.begin(I2C_ADDR);								// Initialize I2C - Device Mode
-	Wire.onReceive(I2C_Receive);						// Used to Receive Data
-	Wire.onRequest(I2C_Send);							// Used to Send Data, may never be used
+    //initialize i2C
+    Wire.begin(I2C_ADDR);                               // Initialize I2C - Device Mode
+    Wire.onReceive(I2C_Receive);                        // Used to Receive Data
+    Wire.onRequest(I2C_Send);                           // Used to Send Data, may never be used
 
-	POW_BUT.attachClick(Power_Button_Press);			// Should the Power off be long, or short?
-	POW_BUT.attachDuringLongPress(Power_Button_Press);	// Both for now
+    POW_BUT.attachClick(Power_Button_Press);            // Should the Power off be long, or short?
+    POW_BUT.attachDuringLongPress(Power_Button_Press);  // Both for now
 
-	RES_BUT.attachClick(Reset_Button_Press);			// Short Click = NMI, Long Press = Reset
-	RES_BUT.attachDuringLongPress(Reset_Button_Hold);	// Actual Reset Call
+    RES_BUT.attachClick(Reset_Button_Press);            // Short Click = NMI, Long Press = Reset
+    RES_BUT.attachDuringLongPress(Reset_Button_Hold);   // Actual Reset Call
 
-	NMI_BUT.attachClick(Reset_Button_Press);			// NMI Call is the same as short Reset
-	//NMI_BUT.attachClick(HardReboot);					// strangely, this works fine via NMI push, but fails via I2C?
+    NMI_BUT.attachClick(Reset_Button_Press);            // NMI Call is the same as short Reset
+    //NMI_BUT.attachClick(HardReboot);                  // strangely, this works fine via NMI push, but fails via I2C?
 
 
-	pinMode(PWR_OK, INPUT);
-	pinMode(PWR_ON, OUTPUT);
-	digitalWrite(PWR_ON, HIGH);
+    pinMode(PWR_OK, INPUT);
+    pinMode(PWR_ON, OUTPUT);
+    digitalWrite(PWR_ON, HIGH);
 
-	pinMode(ACT_LED, OUTPUT);
-	analogWrite(ACT_LED, 0);
+    pinMode(ACT_LED, OUTPUT);
+    analogWrite(ACT_LED, 0);
 
-	pinMode(RESB_PIN,OUTPUT);
-	digitalWrite(RESB_PIN,LOW);					// Hold Reset on statup
+    pinMode(RESB_PIN,OUTPUT);
+    digitalWrite(RESB_PIN,LOW);                 // Hold Reset on statup
 
-	pinMode(NMIB_PIN,OUTPUT);
-	digitalWrite(NMIB_PIN,HIGH);
+    pinMode(NMIB_PIN,OUTPUT);
+    digitalWrite(NMIB_PIN,HIGH);
 
-	// PS/2 host init
-	Keyboard.begin(keyboardClockIrq);
-	Mouse.begin(mouseClockIrq);
+    // PS/2 host init
+    Keyboard.begin(keyboardClockIrq);
+    Mouse.begin(mouseClockIrq);
 }
 
 uint16_t LED_last_on_ms = 0;
 
 void loop() {
-	POW_BUT.tick();								// Check Button Status
-	RES_BUT.tick();
-	NMI_BUT.tick();
+    POW_BUT.tick();                             // Check Button Status
+    RES_BUT.tick();
+    NMI_BUT.tick();
 
-	if ((SYSTEM_POWERED == 1) && (!digitalRead(PWR_OK)))
-	{
-		PowerOffSeq();
-		//kill power if PWR_OK dies, and system on
-		//error handling?
-	}
+    if ((SYSTEM_POWERED == 1) && (!digitalRead(PWR_OK)))
+    {
+        PowerOffSeq();
+        //kill power if PWR_OK dies, and system on
+        //error handling?
+    }
 
-	// DEBUG: turn activity LED on if there are keys in the keybuffer
-	analogWrite(ACT_LED, Keyboard.available() ? 255 : 0);
+    // DEBUG: turn activity LED on if there are keys in the keybuffer
+    analogWrite(ACT_LED, Keyboard.available() ? 255 : 0);
 
-	delay(10);									// Short Delay, required by OneButton if code is short
+    delay(10);                                  // Short Delay, required by OneButton if code is short
 }
 
 void Power_Button_Press() {
-	if (SYSTEM_POWERED == 0) {					// If Off, turn on
-		PowerOnSeq();
-	}
-	else {										// If On, turn off
-		PowerOffSeq();
-	}
+    if (SYSTEM_POWERED == 0) {                  // If Off, turn on
+        PowerOnSeq();
+    }
+    else {                                      // If On, turn off
+        PowerOffSeq();
+    }
 }
 
 void I2C_Receive(int) {
-	// We are resetting the data beforehand
-	I2C_Data[0] = 0;
-	I2C_Data[1] = 0;
+    // We are resetting the data beforehand
+    I2C_Data[0] = 0;
+    I2C_Data[1] = 0;
 
-	int ct=0;
-	while (Wire.available()) {
-		if (ct<2) {								// read first two bytes only
-			byte c = Wire.read();
-			I2C_Data[ct] = c;
-			ct++;
-		}
-		else {
-			Wire.read();			// eat extra data, should not be sent
-		}
-	}
-	if (ct == 2) {
-		I2C_Process();							// process received cmd
-	}
+    int ct=0;
+    while (Wire.available()) {
+        if (ct<2) {                             // read first two bytes only
+            byte c = Wire.read();
+            I2C_Data[ct] = c;
+            ct++;
+        }
+        else {
+            Wire.read();            // eat extra data, should not be sent
+        }
+    }
+    if (ct == 2) {
+        I2C_Process();                          // process received cmd
+    }
 }
 
 //I2C Commands - Two Bytes per Command
-//0x01 0x00		 - Power Off
-//0x01 0x01		 - Hard Reboot (not working for some reason)
-//0x02 0x00		 - Reset Button Press
-//0x03 0x00		 - NMI Button press
-//0x04 0x00-0xFF - Power LED Level (PWM)		// need to remove, not enough lines 
+//0x01 0x00      - Power Off
+//0x01 0x01      - Hard Reboot (not working for some reason)
+//0x02 0x00      - Reset Button Press
+//0x03 0x00      - NMI Button press
+//0x04 0x00-0xFF - Power LED Level (PWM)        // need to remove, not enough lines 
 //0x05 0x00-0xFF - Activity/HDD LED Level (PWM)
 void I2C_Process() {
-	if (I2C_Data[0] == 1) {						// 1st Byte : Byte 1 - Power Events (Power off & Reboot)
-		switch (I2C_Data[1]) {
-			case 0:PowerOffSeq();				// 2nd Byte : 0 - Power Off
-				break;
-			case 1:HardReboot();				// 2nd Byte : 1 - Reboot (Physical Power off, wait 500ms, Power on)
-				break;							// This command triggers, but the system does not power back on?  Not sure why.
-		}
-	}
-	if (I2C_Data[0] == 2) {						// 1st Byte : Byte 2 - Reset Event(s)
-		switch (I2C_Data[1]) {
-			case 0:Reset_Button_Hold();			// 2nd Byte : 0 - Reset button Press
-				break;
-		}
-	}
-	if (I2C_Data[0] == 3) {						// 1st Byte : Byte 3 - NMI Event(s)
-		switch (I2C_Data[1]) {
-			case 0:Reset_Button_Press();		// 2nd Byte : 0 - NMI button Press
-				break;
-		}
-	}
-	// ["Byte 4 - Power LED Level" removed]
-	if (I2C_Data[0] == 5) {						// 1st Byte : Byte 5 - Activity LED Level
-		analogWrite(ACT_LED, I2C_Data[1]);		// 2nd Byte : Set Value directly
-	}
+    if (I2C_Data[0] == 1) {                     // 1st Byte : Byte 1 - Power Events (Power off & Reboot)
+        switch (I2C_Data[1]) {
+            case 0:PowerOffSeq();               // 2nd Byte : 0 - Power Off
+                break;
+            case 1:HardReboot();                // 2nd Byte : 1 - Reboot (Physical Power off, wait 500ms, Power on)
+                break;                          // This command triggers, but the system does not power back on?  Not sure why.
+        }
+    }
+    if (I2C_Data[0] == 2) {                     // 1st Byte : Byte 2 - Reset Event(s)
+        switch (I2C_Data[1]) {
+            case 0:Reset_Button_Hold();         // 2nd Byte : 0 - Reset button Press
+                break;
+        }
+    }
+    if (I2C_Data[0] == 3) {                     // 1st Byte : Byte 3 - NMI Event(s)
+        switch (I2C_Data[1]) {
+            case 0:Reset_Button_Press();        // 2nd Byte : 0 - NMI button Press
+                break;
+        }
+    }
+    // ["Byte 4 - Power LED Level" removed]
+    if (I2C_Data[0] == 5) {                     // 1st Byte : Byte 5 - Activity LED Level
+        analogWrite(ACT_LED, I2C_Data[1]);      // 2nd Byte : Set Value directly
+    }
 
-	if (I2C_Data[0] == 7) {						// 1st Byte : Byte 7 - Keyboard: read next keycode
-		// Nothing to do here, register offset 7 is read only
-	}
+    if (I2C_Data[0] == 7) {                     // 1st Byte : Byte 7 - Keyboard: read next keycode
+        // Nothing to do here, register offset 7 is read only
+    }
 }
 
 void I2C_Send() {
-	// DBG_PRINTLN("I2C_Send");
-	int nextKey = 0;
-	if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
-		if (Keyboard.available()) {
-			nextKey  = Keyboard.next();
-			Wire.write(nextKey);
-		}
-		else {
-			Wire.write(0);
-		}        
-	}
+    // DBG_PRINTLN("I2C_Send");
+    int nextKey = 0;
+    if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
+        if (Keyboard.available()) {
+            nextKey  = Keyboard.next();
+            Wire.write(nextKey);
+        }
+        else {
+            Wire.write(0);
+        }        
+    }
 }
 
 void Reset_Button_Hold() {
-  Keyboard.flush();
-	if (SYSTEM_POWERED == 1) {					// Ignore unless Powered On
-		digitalWrite(RESB_PIN,LOW);				// Press RESET
-		delay(RESB_HOLDTIME);
-		digitalWrite(RESB_PIN,HIGH);
-	}
+    Keyboard.flush();
+    if (SYSTEM_POWERED == 1) {                  // Ignore unless Powered On
+        digitalWrite(RESB_PIN,LOW);             // Press RESET
+        delay(RESB_HOLDTIME);
+        digitalWrite(RESB_PIN,HIGH);
+    }
 }
 
 void Reset_Button_Press() {
-	if (SYSTEM_POWERED == 1) {					// Ignore unless Powered On
-		digitalWrite(NMIB_PIN,LOW);				// Press NMI
-		delay(NMI_HOLDTIME);
-		digitalWrite(NMIB_PIN,HIGH);
-	}
+    if (SYSTEM_POWERED == 1) {                  // Ignore unless Powered On
+        digitalWrite(NMIB_PIN,LOW);             // Press NMI
+        delay(NMI_HOLDTIME);
+        digitalWrite(NMIB_PIN,HIGH);
+    }
 }
 
 void PowerOffSeq() {
-	digitalWrite(PWR_ON, HIGH);					// Turn off supply
-	SYSTEM_POWERED=0;							// Global Power state Off
-	digitalWrite(RESB_PIN,LOW);
-	delay(RESB_HOLDTIME);						// Mostly here to add some delay between presses
+    digitalWrite(PWR_ON, HIGH);                 // Turn off supply
+    SYSTEM_POWERED=0;                           // Global Power state Off
+    digitalWrite(RESB_PIN,LOW);
+    delay(RESB_HOLDTIME);                       // Mostly here to add some delay between presses
 }
 
 void PowerOnSeq() {
-	digitalWrite(PWR_ON, LOW);					// turn on power supply
-	unsigned long TimeDelta = 0;
-	unsigned long StartTime = millis();			// get current time
-	while (!digitalRead(PWR_OK)) {				// Time how long it takes
-		TimeDelta=millis() - StartTime;			// for PWR_OK to go active.
-	}
-	if ((PWR_ON_MIN > TimeDelta) || (PWR_ON_MAX < TimeDelta)) {
-		PowerOffSeq();							// FAULT! Turn off supply
-		// insert error handler, flash activity light & Halt?	IE, require hard power off before continue?
-	}
-	else {
-		SYSTEM_POWERED=1;						// Global Power state On
-		delay(RESB_HOLDTIME);					// Allow system to stabilize
-		digitalWrite(RESB_PIN,HIGH);			// Release Reset
-	}
+    digitalWrite(PWR_ON, LOW);                  // turn on power supply
+    unsigned long TimeDelta = 0;
+    unsigned long StartTime = millis();         // get current time
+    while (!digitalRead(PWR_OK)) {              // Time how long it takes
+        TimeDelta=millis() - StartTime;         // for PWR_OK to go active.
+    }
+    if ((PWR_ON_MIN > TimeDelta) || (PWR_ON_MAX < TimeDelta)) {
+        PowerOffSeq();                          // FAULT! Turn off supply
+        // insert error handler, flash activity light & Halt?   IE, require hard power off before continue?
+    }
+    else {
+        SYSTEM_POWERED=1;                       // Global Power state On
+        delay(RESB_HOLDTIME);                   // Allow system to stabilize
+        digitalWrite(RESB_PIN,HIGH);            // Release Reset
+    }
 }
 
-void HardReboot() {								// This never works via I2C... Why!!!
-	PowerOffSeq();
-	delay(1000);
-	PowerOnSeq();
+void HardReboot() {                             // This never works via I2C... Why!!!
+    PowerOffSeq();
+    delay(1000);
+    PowerOnSeq();
 }

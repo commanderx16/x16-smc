@@ -6,119 +6,223 @@
 
 /// @brief PS/2 IO Port handler
 /// @tparam size Circular buffer size for incoming data, must be a power of 2 and not more than 256
-template<int clk, int dat, uint8_t size=8>
+template<int clk, int dat, uint8_t size=16>  // Single keycodes can be 4 bytes long. We want a little bit of margin here.
 class PS2Port
 {
-	static_assert(size <= 256, "Buffer size may not exceed 256");				// Hard limit on buffer size
-	static_assert((size & (size-1)) == 0, "Buffer size must be a power of 2");	// size must be a power of 2
-	static_assert(digitalPinToInterrupt(clk) != NOT_AN_INTERRUPT);
+    static_assert(size <= 256, "Buffer size may not exceed 256");                // Hard limit on buffer size
+    static_assert((size & (size-1)) == 0, "Buffer size must be a power of 2");    // size must be a power of 2
+    static_assert(digitalPinToInterrupt(clk) != NOT_AN_INTERRUPT);
 
 private:
-	uint8_t clkPin;
-	uint8_t datPin;
-	volatile uint8_t head;
-	volatile uint8_t tail;
-	volatile uint8_t buffer[size];
+    uint8_t clkPin;
+    uint8_t datPin;
 
-	uint8_t curCode;
-	byte parity;
-	byte rxBitCount;
-	uint32_t lastBitMillis;
+    // We keep a record of the point in the buffer that contains the last completed keycodes.
+    // Below are the possible keycode-patters. "lastCompletedKeycodeIndex" now points to the last byte
+    // of the last completed keycode. In the table below this is always the point of 'yy'.
+    
+    // KeyDown  |   KeyUp
+    // ------------------------
+    //     yy   |      F0yy
+    //   E0yy   |    E0F0yy
+    // E1xxyy   |  E1F0xxyy
 
-	void resetReceiver() {
-		curCode = 0;
-		parity = 0;
-		rxBitCount = 0;
-	};
+    volatile uint8_t lastCompletedKeycodeIndex;
+    
+    volatile uint8_t head;
+    volatile uint8_t tail;
+    volatile uint8_t buffer[size];
+
+    uint8_t curCode;
+    byte parity;
+    byte rxBitCount;
+    uint32_t lastBitMillis;
+
+    void resetReceiver() {
+        curCode = 0;
+        parity = 0;
+        rxBitCount = 0;
+    };
 
 public:
-	PS2Port() :
-		clkPin(clk), datPin(dat),
-		head(0), tail(0), curCode(0), parity(0), lastBitMillis(0), rxBitCount(0) {};
+    PS2Port() :
+        clkPin(clk), datPin(dat),
+        head(0), tail(0), curCode(0), parity(0), lastBitMillis(0), rxBitCount(0), lastCompletedKeycodeIndex(0) {};
 
-	/// @brief Begin processing PS/2 traffic
-	void begin(void(*irqFunc)()) {
-		attachInterrupt(digitalPinToInterrupt(clkPin), irqFunc, FALLING);
-	}
+    /// @brief Begin processing PS/2 traffic
+    void begin(void(*irqFunc)()) {
+        attachInterrupt(digitalPinToInterrupt(clkPin), irqFunc, FALLING);
+    }
 
-	/// @brief Process data on falling clock edge
-	/// @attention This is interrupt code
-	void onFallingClock()
-	{
-		uint32_t curMillis = millis();
-		if (curMillis >= (lastBitMillis + SCANCODE_TIMEOUT_MS))
-		{
-			// Haven't heard from device in a while, assume this is a new keycode
-			resetReceiver();
-		}
-		lastBitMillis = curMillis;
-		
-		byte curBit = digitalRead(datPin);
-		switch(rxBitCount)
-		{
-			case 0:
-				// Start bit
-				if (curBit == 0)
-				{
-					rxBitCount++;
-				} // else Protocol error - no start bit
-				break;
-			
-			case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8:
-				// Data bit, LSb first
-				if (curBit) curCode |= 1 << (rxBitCount-1);
-				parity += curBit;
-				rxBitCount++;
-				break;
+    /// @brief Process data on falling clock edge
+    /// @attention This is interrupt code
+    void onFallingClock()
+    {
+        uint32_t curMillis = millis();
+        if (curMillis >= (lastBitMillis + SCANCODE_TIMEOUT_MS))
+        {
+            // Haven't heard from device in a while, assume this is a new keycode
+            resetReceiver();
+        }
+        lastBitMillis = curMillis;
+        
+        byte curBit = digitalRead(datPin);
+        switch(rxBitCount)
+        {
+            case 0:
+                // Start bit
+                if (curBit == 0)
+                {
+                    rxBitCount++;
+                } // else Protocol error - no start bit
+                break;
+            
+            case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8:
+                // Data bit, LSb first
+                if (curBit) curCode |= 1 << (rxBitCount-1);
+                parity += curBit;
+                rxBitCount++;
+                break;
 
-			case 9:
-				// parity bit
-				parity += curBit;
-				// Parity bit will be checked after stop bit
-				rxBitCount++;
-				break;
-			
-			case 10:
-				// stop bit
-				if (curBit != 1){
-					// Protocol Error - no stop bit
-				}
-				else if ((parity & 0x1) != 1){
-					// Protocol Error - parity mismatch
-				}
-				{
-					byte headNext = (head+1) & (size-1);
-					if (headNext != tail)
-					{
-						buffer[head] = (byte)(curCode);
-						head = headNext;
-					} // else Ring buffer overrun, drop the incoming code :(
-				DBG_PRINT("keycode: ");
-				DBG_PRINTLN((byte)(curCode), HEX);
-				rxBitCount = 0;
-				parity = 0;
-				curCode = 0;
-				}
-				break;
-		}
-	}
+            case 9:
+                // parity bit
+                parity += curBit;
+                // Parity bit will be checked after stop bit
+                rxBitCount++;
+                break;
+            
+            case 10:
+                // stop bit
+                if (curBit != 1){
+                    // Protocol Error - no stop bit
+                }
+                else if ((parity & 0x1) != 1){
+                    // Protocol Error - parity mismatch
+                }
+                {
+                    byte headNext = (head+1) & (size-1);
+                    if (headNext != tail)
+                    {
+                        buffer[head] = (byte)(curCode);
+                        head = headNext;
+                        
+                        if (lastKeyCodeIsCompleted()) {
+                            lastCompletedKeycodeIndex = head;
+                        }
+                        
+                    } // else Ring buffer overrun, drop the incoming code :(
+                    
+                    DBG_PRINT("keycode: ");
+                    DBG_PRINTLN((byte)(curCode), HEX);
+                    rxBitCount = 0;
+                    parity = 0;
+                    curCode = 0;
+                }
+                break;
+        }
+    }
+    
+    bool lastKeyCodeIsCompleted() { 
+    
+        bool keyCodeIsCompleted = false;
+        
+        bool prefixKnown = false;
+        bool keyUpOrDownKnown = false;
+        bool consumeNextByte = true;
+        uint8_t nrOfDataBytesLeft = 1;
+        
+        uint8_t currentHead = lastCompletedKeycodeIndex;
+        
+        while (!keyCodeIsCompleted) {
+            
+            uint8_t currentCodeOfKeycode = 0;
+            
+            if (consumeNextByte) {
+                if (currentHead != head) {
+                    // We go to the next byte of the keycode
+                    byte currentHead = (currentHead+1) & (size-1);
+                    currentCodeOfKeycode = buffer[currentHead];
+                }
+                else {
+                    // We reached the end of the received bytes, but we still need bytes to complete the keycode. So we break.
+                    break;
+                }
+            }
+            
+            if (!prefixKnown) {
+                if (currentCodeOfKeycode == 0xE1 || currentCodeOfKeycode == 0xE0) {
+                    prefixKnown = true;
+                    if (currentCodeOfKeycode == 0xE0) {
+                        // We expect 1 data byte
+                        nrOfDataBytesLeft = 1;
+                    }
+                    else if (currentCodeOfKeycode == 0xE1) {
+                        // We expect 2 data bytes
+                        nrOfDataBytesLeft = 2;
+                    }
+                    consumeNextByte = true;
+                }
+                else {
+                    prefixKnown = true;
+                    consumeNextByte = false; // We determined the fact there is no prefix, so we still have to consume this byte (which is not a prefix)
+                }
+            }
+            else if (!keyUpOrDownKnown) {
+                if (currentCodeOfKeycode == 0xF0) {
+                    keyUpOrDownKnown = true;
+                    consumeNextByte = true;
+                }
+                else {
+                    keyUpOrDownKnown = true;
+                    consumeNextByte = false; // We determined the fact there is no keyUp, so we still have to consume this byte (which is not a a keyUp byte)
+                }
+            }
+            else {   
+                // We interpret the byte as a data byte
+                nrOfDataBytesLeft -= 1;
+                if (nrOfDataBytesLeft == 0) {
+                    keyCodeIsCompleted = true;
+// CHECK: we assume that we also reached the end here (head), we may want to double check that!
+                }
+                consumeNextByte = true;
+            }
+        }
+            
+        
+        return keyCodeIsCompleted;
+    };
 
-	/// @brief Returns true if at least one byte is available from the PS/2 port
-	bool available() { return head != tail; };
+    /// @brief Returns true if at least one byte is available from the PS/2 port
+    bool available() { return head != tail; };
  
-	/// @brief Returns the next available byte from the PS/2 port
-	uint8_t next() {
-		uint8_t value = 0;
-		if (available()) {
-			value = buffer[tail];
-			tail = (tail+1) & (size-1);
-		}
-		return value; 
-	};
+    /// @brief Returns the next available byte from the PS/2 port
+    uint8_t next() {
+        if (available()) {
+            uint8_t value = buffer[tail];
+            tail = (tail+1) & (size-1);
+            return value; 
+        }
+        else {
+            return 0;
+        }
+    };
 
-	void flush() {
-		head = tail = 0;
-		rxBitCount = 0;
-		lastBitMillis = 0;
-	}
+    /// @brief Returns the next available byte of a completed keycode from the PS/2 port
+    uint8_t nextByteOfCompletedKeycode() {
+        if (lastCompletedKeycodeIndex != tail) {
+            uint8_t value = buffer[tail];
+            tail = (tail+1) & (size-1);
+            return value; 
+        }
+        else {
+            return 0;
+        }
+    };
+    
+    
+  void flush() {
+    head = tail = lastCompletedKeycodeIndex = 0;
+    rxBitCount = 0;
+    lastBitMillis = 0;
+  }
 };
