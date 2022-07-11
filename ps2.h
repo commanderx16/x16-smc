@@ -11,7 +11,7 @@ class PS2Port
 {
 	static_assert(size <= 256, "Buffer size may not exceed 256");				// Hard limit on buffer size
 	static_assert((size & (size-1)) == 0, "Buffer size must be a power of 2");	// size must be a power of 2
-  static_assert(digitalPinToInterrupt(clk) != NOT_AN_INTERRUPT);
+	static_assert(digitalPinToInterrupt(clk) != NOT_AN_INTERRUPT);
 
 private:
 	uint8_t clkPin;
@@ -108,16 +108,17 @@ public:
  
 	/// @brief Returns the next available byte from the PS/2 port
 	uint8_t next() {
-		uint8_t value = buffer[tail];
+		uint8_t value = 0;
 		if (available()) {
+			value = buffer[tail];
 			tail = (tail+1) & (size-1);
 		}
-    return value; 
+		return value; 
 	};
 
-  void flush() {
-    head = tail = 0;
-    rxBitCount = 0;
-    lastBitMillis = 0;
-  }
+	void flush() {
+		head = tail = 0;
+		rxBitCount = 0;
+		lastBitMillis = 0;
+	}
 };

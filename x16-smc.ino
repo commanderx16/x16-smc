@@ -128,10 +128,7 @@ OneButton NMI_BUT(NMI_BUTTON_PIN, true, true);
 PS2Port<PS2_KBD_CLK, PS2_KBD_DAT, 16> Keyboard;
 PS2Port<PS2_MSE_CLK, PS2_MSE_DAT, 4> Mouse;
 
-volatile uint8_t kbd_int_toggle = 0;
-
 void keyboardClockIrq() {
-  kbd_int_toggle ^= 1;
 	Keyboard.onFallingClock();
 }
 
@@ -145,7 +142,7 @@ bool I2C_Active = false;
 
 void setup() {
 #if defined(USE_SERIAL_DEBUG)
-  Serial.begin(SERIAL_BPS);
+	Serial.begin(SERIAL_BPS);
 #endif
   DBG_PRINTLN("Commander X16 SMC Start");
 	//initialize i2C
@@ -194,6 +191,10 @@ void loop() {
 		//kill power if PWR_OK dies, and system on
 		//error handling?
 	}
+
+	// DEBUG: turn activity LED on if there are keys in the keybuffer
+	analogWrite(ACT_LED, Keyboard.available() ? 255 : 0);
+
 	delay(10);									// Short Delay, required by OneButton if code is short
 }
 
@@ -207,12 +208,10 @@ void Power_Button_Press() {
 }
 
 void I2C_Receive(int) {
-//	DBG_PRINTLN("I2C_Receive");
-    
-    // We are resetting the data beforehand
+	// We are resetting the data beforehand
 	I2C_Data[0] = 0;
 	I2C_Data[1] = 0;
-    
+
 	int ct=0;
 	while (Wire.available()) {
 		if (ct<2) {								// read first two bytes only
@@ -263,22 +262,22 @@ void I2C_Process() {
 	}
 
 	if (I2C_Data[0] == 7) {						// 1st Byte : Byte 7 - Keyboard: read next keycode
-        // Nothing to do here. The action is during the I2C_Send that follows this I2C_Receive
-    }
+		// Nothing to do here, register offset 7 is read only
+	}
 }
 
 void I2C_Send() {
-   	// DBG_PRINTLN("I2C_Send");
-    int nextKey = 0;
-    if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
-        if (Keyboard.available()) {
-            nextKey  = Keyboard.next();
-            Wire.write(nextKey);
-        }
-        else {
-            Wire.write(0);
-        }        
-    }
+	// DBG_PRINTLN("I2C_Send");
+	int nextKey = 0;
+	if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
+		if (Keyboard.available()) {
+			nextKey  = Keyboard.next();
+			Wire.write(nextKey);
+		}
+		else {
+			Wire.write(0);
+		}        
+	}
 }
 
 void Reset_Button_Hold() {
