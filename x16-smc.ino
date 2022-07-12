@@ -268,6 +268,9 @@ void I2C_Process() {
     if (I2C_Data[0] == 8) {
       echo_byte = I2C_Data[1];
     }
+    if (I2C_Data[0] == 9) {
+      DBG_PRINTLN("DBG register 9 called. echo_byte = %u",echo_byte);
+    }
 }
 
 void I2C_Send() {
