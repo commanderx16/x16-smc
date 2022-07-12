@@ -139,6 +139,7 @@ void mouseClockIrq() {
 bool SYSTEM_POWERED = 0;                                // default state - Powered off
 int  I2C_Data[2] = {0, 0};
 bool I2C_Active = false;
+char echo_byte = 0;
 
 void setup() {
 #if defined(USE_SERIAL_DEBUG)
@@ -233,7 +234,7 @@ void I2C_Receive(int) {
 //0x01 0x01      - Hard Reboot (not working for some reason)
 //0x02 0x00      - Reset Button Press
 //0x03 0x00      - NMI Button press
-//0x04 0x00-0xFF - Power LED Level (PWM)        // need to remove, not enough lines 
+//0x04 0x00-0xFF - Power LED Level (PWM)        // need to remove, not enough lines
 //0x05 0x00-0xFF - Activity/HDD LED Level (PWM)
 void I2C_Process() {
     if (I2C_Data[0] == 1) {                     // 1st Byte : Byte 1 - Power Events (Power off & Reboot)
@@ -264,6 +265,9 @@ void I2C_Process() {
     if (I2C_Data[0] == 7) {                     // 1st Byte : Byte 7 - Keyboard: read next keycode
         // Nothing to do here, register offset 7 is read only
     }
+    if (I2C_Data[0] == 8) {
+      echo_byte = I2C_Data[1];
+    }
 }
 
 void I2C_Send() {
@@ -276,7 +280,10 @@ void I2C_Send() {
         }
         else {
             Wire.write(0);
-        }        
+        }
+    }
+    if (I2C_Data[0] == 8) {
+      Wire.write(echo_byte);
     }
 }
 
