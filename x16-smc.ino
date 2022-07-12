@@ -270,7 +270,13 @@ void I2C_Send() {
     // DBG_PRINTLN("I2C_Send");
     int nextKey = 0;
     if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
-        Wire.write(Keyboard.nextByteOfCompletedKeycode());
+        if (Keyboard.available()) {
+            nextKey  = Keyboard.next();
+            Wire.write(nextKey);
+        }
+        else {
+            Wire.write(0);
+        }        
     }
 }
 
