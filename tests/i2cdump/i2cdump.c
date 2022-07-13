@@ -10,21 +10,26 @@ extern char __fastcall__ cx16_k_i2c_writebyte(char value, char offset, char devi
 
 void main() {
   static int k;
-  static char pause = 0;
+  static int pause = 0;
   VERA.irq_enable = 0;
   printf("%c",CH_HOME);
   while (1) {
     k=cx16_k_i2c_readbyte(KEYBUFFER,SMC);
-    if (k<0) {
-      printf("!");
-    }
-    else if (k==0) {
-      if (!pause) {
+    switch (k) {
+    case -1:
+      if (pause != -1) {
+        printf("!");
+        pause = -1;
+      }
+      break;
+    case 0:
+      if (pause!=1) {
         pause=1;
         printf(".");
       }
-    }
-    else {
+      break;
+
+    default:
       pause=0;
       printf("%02x,",k);
     }
