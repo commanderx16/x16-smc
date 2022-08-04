@@ -68,10 +68,10 @@ ATTINY861 Pinout
 
 // Button definitions
 
-#define PS2_KBD_CLK       2
-#define PS2_KBD_DAT       A1
-#define PS2_MSE_CLK       3
-#define PS2_MSE_DAT       A3
+#define PS2_KBD_CLK       3  
+#define PS2_KBD_DAT       A3
+#define PS2_MSE_CLK       2
+#define PS2_MSE_DAT       A1
 
 #define I2C_SDA_PIN       A4
 #define I2C_SCL_PIN       A5
@@ -123,10 +123,12 @@ ATTINY861 Pinout
 
 OneButton POW_BUT(POWER_BUTTON_PIN, true, true);
 OneButton RES_BUT(RESET_BUTTON_PIN, true, true);
-OneButton NMI_BUT(NMI_BUTTON_PIN, true, true);
+//OneButton NMI_BUT(NMI_BUTTON_PIN, true, true);
 
 PS2Port<PS2_KBD_CLK, PS2_KBD_DAT, 16> Keyboard;
-PS2Port<PS2_MSE_CLK, PS2_MSE_DAT, 4> Mouse;
+PS2Port<PS2_MSE_CLK, PS2_MSE_DAT, 8> Mouse;
+uint8_t blink_bit = 8;
+uint8_t blink_counter = 0;
 
 void keyboardClockIrq() {
     Keyboard.onFallingClock();
@@ -137,7 +139,7 @@ void mouseClockIrq() {
 }
 
 bool SYSTEM_POWERED = 0;                                // default state - Powered off
-int  I2C_Data[2] = {0, 0};
+int  I2C_Data[3] = {0, 0, 0};
 bool I2C_Active = false;
 char echo_byte = 0;
 
@@ -145,7 +147,44 @@ void setup() {
 #if defined(USE_SERIAL_DEBUG)
     Serial.begin(SERIAL_BPS);
 #endif
-  DBG_PRINTLN("Commander X16 SMC Start");
+    //Setup Timer 1 interrupt to run every 25 us >>>
+    cli();
+
+#if defined(__AVR_ATtiny861__)
+  static_assert(TIMER_TO_USE_FOR_MILLIS != 1);
+
+  TCCR1A = 0;
+  TCCR1C = 0;
+  TCCR1D = 0;
+  TC1H = 0;
+  TCNT1 = 0;
+
+  PLLCSR = 0;
+  OCR1B = 0;
+
+  TCCR1B = 0b01000101; // Prescaler sel = clk / 16
+  OCR1A = 100;         // 100 x 1.0 us = 100 us
+
+  TIMSK |= 1 << OCIE1A;
+#endif
+
+#if defined(__AVR_ATmega328P__)
+    TCCR1A = 0;
+    TCCR1B = 0; 
+    TCNT1 = 0;
+  
+    TCCR1B |= 8;  //Clear Timer on Compare Match (CTC) Mode
+    TCCR1B |= 2;  //Prescale 8x => 1 tick = 0.5 us @ 16 MHz
+    OCR1A = 200;   //200 x 0.5 us = 100 us
+  
+    TIMSK1 = (1<<OCIE1A);
+#endif
+
+    //Timer 1 interrupt setup is done, enable interrupts
+    sei();
+
+    DBG_PRINTLN("Commander X16 SMC Start");
+    
     //initialize i2C
     Wire.begin(I2C_ADDR);                               // Initialize I2C - Device Mode
     Wire.onReceive(I2C_Receive);                        // Used to Receive Data
@@ -157,7 +196,7 @@ void setup() {
     RES_BUT.attachClick(Reset_Button_Press);            // Short Click = NMI, Long Press = Reset
     RES_BUT.attachDuringLongPress(Reset_Button_Hold);   // Actual Reset Call
 
-    NMI_BUT.attachClick(Reset_Button_Press);            // NMI Call is the same as short Reset
+    //NMI_BUT.attachClick(Reset_Button_Press);            // NMI Call is the same as short Reset
     //NMI_BUT.attachClick(HardReboot);                  // strangely, this works fine via NMI push, but fails via I2C?
 
 
@@ -179,13 +218,136 @@ void setup() {
     Mouse.begin(mouseClockIrq);
 }
 
+uint8_t mouse_init_state = 0;
+
+enum mouse_command
+{
+  RESET = 0xFF,
+  ACK = 0xFA,
+  BAT_OK = 0xAA,
+  BAT_FAIL = 0xFC,
+  MOUSE_ID = 0x00,
+  SET_SAMPLE_RATE = 0xF3,
+  READ_DEVICE_TYPE = 0xF2,
+  SET_RESOLUTION = 0xE8,
+  SET_SCALING = 0xE6,
+  ENABLE = 0xF4
+};
+
+
+void MouseInitTick()
+{
+  if (SYSTEM_POWERED == 0)
+  {
+    mouse_init_state == 0;
+    return;
+  }
+  uint8_t mstatus = Mouse.getCommandStatus();
+  if (mstatus == 1)
+  {
+    return;
+  }
+  
+  switch(mouse_init_state)
+  {
+    case 0:
+      mouse_init_state++;
+      break;
+    case 1:
+      Mouse.flush();
+      mouse_init_state++;
+      break;
+  
+    case 2:             // SEND RESET
+      blink_bit = 6;
+      Mouse.sendPS2Command(1, mouse_command::RESET);
+      mouse_init_state++;
+      break;
+
+    case 3:             // RECEIVE ACK
+      if (mstatus == mouse_command::ACK) {
+        Mouse.next();
+        mouse_init_state++;
+      }
+      else {
+        blink_bit = 3;
+        mouse_init_state = 0; // Assume an error of some sort.
+      }
+      break;
+      
+    case 4:           // RECEIVE BAT_OK
+      // expect self test OK
+      if (Mouse.available()) {
+        uint8_t b = Mouse.next();
+        if ( b != mouse_command::BAT_OK ) {
+          blink_bit = 4;
+          mouse_init_state = 0;
+        } else {
+          mouse_init_state++;
+        }
+      }
+      break;
+
+    case 5:             // RECEIVE MOUSE_ID, SEND SET_SAMPLE_RATE
+      // expect mouse ID byte (0x00)
+      if (Mouse.available()) {
+        uint8_t b = Mouse.next();
+        if ( b != mouse_command::MOUSE_ID ) {
+          mouse_init_state = 0;
+        } else {
+          Mouse.sendPS2Command(1, mouse_command::SET_SAMPLE_RATE);
+          mouse_init_state++;
+        }
+      }
+      break;
+
+    case 6:           // RECEIVE ACK, SEND 20 updates/sec
+      Mouse.next();
+      if (mstatus != mouse_command::ACK)
+        mouse_init_state = 0;
+      else {
+        Mouse.sendPS2Command(1, 20);
+        mouse_init_state++;
+      }
+      break;
+
+    case 7:           // RECEIVE ACK, SEND ENABLE
+      Mouse.next();
+      if (mstatus != mouse_command::ACK)
+        mouse_init_state = 0;
+      else {
+        Mouse.sendPS2Command(1, mouse_command::ENABLE);
+        mouse_init_state++;
+      }
+      break;
+
+    case 8:         // Receive ACK
+      Mouse.next();
+      if (mstatus != mouse_command::ACK)
+        mouse_init_state = 0;
+      else
+        mouse_init_state++;
+      break;
+
+    case 9:       // Mouse init idle
+      // done
+      blink_bit = 8;
+      mouse_init_state++;
+      break;
+
+    default:
+      break;
+  }
+}
+
 uint16_t LED_last_on_ms = 0;
 
 void loop() {
     POW_BUT.tick();                             // Check Button Status
     RES_BUT.tick();
-    NMI_BUT.tick();
-
+    //NMI_BUT.tick();
+    MouseInitTick();
+    
     if ((SYSTEM_POWERED == 1) && (!digitalRead(PWR_OK)))
     {
         PowerOffSeq();
@@ -194,9 +356,11 @@ void loop() {
     }
 
     // DEBUG: turn activity LED on if there are keys in the keybuffer
-    analogWrite(ACT_LED, Keyboard.available() ? 255 : 0);
-
-    delay(10);                                  // Short Delay, required by OneButton if code is short
+    //analogWrite(ACT_LED, Mouse.available() ? 255 : 0);
+    blink_counter++;
+    if ((blink_counter >> blink_bit) & 0x1 == 1) analogWrite(ACT_LED, 255);
+    else analogWrite(ACT_LED, 0);
+    delay(10);                                  // Short Delay, required by OneButton if code is short   
 }
 
 void Power_Button_Press() {
@@ -212,19 +376,20 @@ void I2C_Receive(int) {
     // We are resetting the data beforehand
     I2C_Data[0] = 0;
     I2C_Data[1] = 0;
+    I2C_Data[2] = 0;
 
     int ct=0;
     while (Wire.available()) {
-        if (ct<2) {                             // read first two bytes only
+        if (ct<3) {                             // read first two bytes only
             byte c = Wire.read();
             I2C_Data[ct] = c;
             ct++;
         }
         else {
-            Wire.read();            // eat extra data, should not be sent
+            Wire.read();                        // eat extra data, should not be sent
         }
     }
-    if (ct == 2) {
+    if (ct == 2 || ct == 3) {
         I2C_Process();                          // process received cmd
     }
 }
@@ -272,27 +437,54 @@ void I2C_Process() {
       DBG_PRINT("DBG register 9 called. echo_byte: ");
       DBG_PRINTLN((byte)(echo_byte), HEX);
     }
+    
+    if (I2C_Data[0] == 0x19){
+      //Send command to keyboard (one byte)
+      Keyboard.sendPS2Command(1, I2C_Data[1], I2C_Data[2]);
+    }
+    if (I2C_Data[0] == 0x1a){
+      //Send command to keyboard (two bytes)
+      Keyboard.sendPS2Command(2, I2C_Data[1], I2C_Data[2]);
+    }
 }
 
 void I2C_Send() {
     // DBG_PRINTLN("I2C_Send");
     int nextKey = 0;
-    if (I2C_Data[0] == 7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
-        if (Keyboard.available()) {
-            nextKey  = Keyboard.next();
-            Wire.write(nextKey);
-        }
-        else {
-            Wire.write(0);
-        }
+    if (I2C_Data[0] == 0x7) {   // 1st Byte : Byte 7 - Keyboard: read next keycode
+      if (Keyboard.available()) {
+          nextKey  = Keyboard.next();
+          Wire.write(nextKey);
+      }
+      else {
+          Wire.write(0);
+      }
     }
     if (I2C_Data[0] == 8) {
       Wire.write(echo_byte);
+    }
+
+    if (I2C_Data[0] == 0x18){
+      //Get keyboard command status
+      Wire.write(Keyboard.getCommandStatus());
+    }
+    if (I2C_Data[0] == 0x21){
+      //Get mouse packet
+      uint8_t buf[] = {0,0,0};
+      if (Mouse.count()>2){
+        buf[0] = Mouse.next();
+        buf[1] = Mouse.next();
+        buf[2] = Mouse.next();
+      }
+      Wire.write(buf,3);
     }
 }
 
 void Reset_Button_Hold() {
     Keyboard.flush();
+    Mouse.reset();
+    analogWrite(ACT_LED, 0);
+    mouse_init_state = 0;
     if (SYSTEM_POWERED == 1) {                  // Ignore unless Powered On
         digitalWrite(RESB_PIN,LOW);             // Press RESET
         delay(RESB_HOLDTIME);
@@ -337,4 +529,14 @@ void HardReboot() {                             // This never works via I2C... W
     PowerOffSeq();
     delay(1000);
     PowerOnSeq();
+}
+
+ISR(TIMER1_COMPA_vect){
+#if defined(__AVR_ATtiny861__)
+  // Reset counter since timer1 doesn't reset itself.
+  TC1H = 0;
+  TCNT1 = 0;
+#endif
+    Keyboard.timerInterrupt();
+    Mouse.timerInterrupt();
 }
