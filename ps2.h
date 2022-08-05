@@ -1,32 +1,22 @@
 #define SCANCODE_TIMEOUT_MS 50
 
-// Should clock and data pins be part of the template instead of constructor args?
-// Doing so might lead to code bloat if the compiler builds two nearly identical functions
-// that differ only by the constants used.
+enum PS2_CMD_STATUS : uint8_t {
+  IDLE = 0,
+  CMD_PENDING = 1,
+  CMD_ACK = 0xFA,
+  CMD_ERR = 0xFE
+};
 
 /// @brief PS/2 IO Port handler
 /// @tparam size Circular buffer size for incoming data, must be a power of 2 and not more than 256
-template<int clk, int dat, uint8_t size = 16> // Single keycodes can be 4 bytes long. We want a little bit of margin here.
+template<uint8_t clkPin, uint8_t datPin, uint8_t size = 16> // Single keycodes can be 4 bytes long. We want a little bit of margin here.
 class PS2Port
 {
     static_assert(size <= 256, "Buffer size may not exceed 256");                // Hard limit on buffer size
     static_assert((size & (size - 1)) == 0, "Buffer size must be a power of 2");  // size must be a power of 2
-    static_assert(digitalPinToInterrupt(clk) != NOT_AN_INTERRUPT);
+    static_assert(digitalPinToInterrupt(clkPin) != NOT_AN_INTERRUPT);
 
   private:
-    uint8_t clkPin;
-    uint8_t datPin;
-
-    // We keep a record of the point in the buffer that contains the last completed keycodes.
-    // Below are the possible keycode-patters. "lastCompletedKeycodeIndex" now points to the last byte
-    // of the last completed keycode. In the table below this is always the point of 'yy'.
-
-    // KeyDown  |   KeyUp
-    // ------------------------
-    //     yy   |      F0yy
-    //   E0yy   |    E0F0yy
-    // E1xxyy   |  E1F0xxyy
-
     volatile uint8_t head;
     volatile uint8_t tail;
     volatile uint8_t buffer[size];
@@ -40,7 +30,7 @@ class PS2Port
     volatile uint8_t outputBuffer[2];
     volatile uint8_t outputSize = 0;
     volatile uint8_t timerCountdown;
-    volatile uint8_t commandStatus = 0;
+    volatile PS2_CMD_STATUS commandStatus = PS2_CMD_STATUS::IDLE;
 
     void resetReceiver() {
       pinMode(datPin, INPUT);
@@ -56,7 +46,6 @@ class PS2Port
 
   public:
     PS2Port() :
-      clkPin(clk), datPin(dat),
       head(0), tail(0), curCode(0), parity(0), lastBitMillis(0), rxBitCount(0), ps2ddr(0), timerCountdown(0)
       {
         resetReceiver();
@@ -71,12 +60,12 @@ class PS2Port
     /// @attention This is interrupt code
     void onFallingClock() {
       if (ps2ddr == 0)
-        onFallingClock_DeviceToHost();
+        receiveBit();
       else
-        onFallingClock_HostToDevice();
+        sendBit();
     }
 
-    void onFallingClock_DeviceToHost()
+    void receiveBit()
     {
       uint32_t curMillis = millis();
       if (curMillis >= (lastBitMillis + SCANCODE_TIMEOUT_MS))
@@ -121,19 +110,19 @@ class PS2Port
           }
 
           //Hhost to device command response handler
-          if (commandStatus==1){
-            if (curCode==0xFE){
+          if (commandStatus==PS2_CMD_STATUS::CMD_PENDING){
+            if (curCode==PS2_CMD_STATUS::CMD_ERR){
               //Command error - Resend
-              commandStatus=0xFE;
+              commandStatus=PS2_CMD_STATUS::CMD_ERR;
             }
-            else if (curCode==0xFA){
+            else if (curCode==PS2_CMD_STATUS::CMD_ACK){
               if (outputSize==2){
                 //Send second byte
                 sendPS2Command(1, outputBuffer[1]);
               }
               else{
                 //Command ACK
-                commandStatus=0xFA;
+                commandStatus=PS2_CMD_STATUS::CMD_ACK;
               }
             }
           }
@@ -158,7 +147,7 @@ class PS2Port
        Interrupt handler used when sending data
        to the PS/2 device
     */
-    void onFallingClock_HostToDevice() {
+    void sendBit() {
       if (timerCountdown > 0) {
         //Ignore clock transitions during the request-to-send
         return;
@@ -253,29 +242,32 @@ class PS2Port
 
     /**
        Sends a command to the PS/2 device
-       A command may consist of one or two bytes
-
-       argc  - Number of arguments = bytes to send
-       cmd   - First byte, typically a command
-       data  - Second byte, typically a command parameter
     */
-    void sendPS2Command(uint8_t argc, uint8_t cmd = 0, uint8_t data = 0) {
-      if (argc < 1 || argc > 2) {
-        //Invalid input
-        outputSize = 0;
-        return;
-      }
-
-      //Prepare sending data to the device
-      commandStatus = 1;        //Command pending
+    void sendPS2Command(uint8_t cmd) {
+      commandStatus = PS2_CMD_STATUS::CMD_PENDING;        //Command pending
       outputBuffer[0] = cmd;    //Fill output buffer
-      outputBuffer[1] = data;
-      outputSize = argc;        //Output buffer size
+      outputBuffer[1] = 0;
+      outputSize = 1;        //Output buffer size
 
       timerCountdown = 3;       //Will determine clock hold time for the request-to-send initiated in the timer 1 interrupt handler
     }
 
-    uint8_t getCommandStatus() {
+    /**
+       Sends a command with data to the PS/2 device
+
+       cmd   - First byte, typically a command
+       data  - Second byte, typically a command parameter
+    */
+    void sendPS2Command(uint8_t cmd, uint8_t data) {
+      commandStatus = PS2_CMD_STATUS::CMD_PENDING;        //Command pending
+      outputBuffer[0] = cmd;    //Fill output buffer
+      outputBuffer[1] = data;
+      outputSize = 2;        //Output buffer size
+
+      timerCountdown = 3;       //Will determine clock hold time for the request-to-send initiated in the timer 1 interrupt handler
+    }
+
+    PS2_CMD_STATUS getCommandStatus() {
       return commandStatus;
     }
 

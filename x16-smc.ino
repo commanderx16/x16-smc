@@ -127,8 +127,8 @@ OneButton RES_BUT(RESET_BUTTON_PIN, true, true);
 
 PS2Port<PS2_KBD_CLK, PS2_KBD_DAT, 16> Keyboard;
 PS2Port<PS2_MSE_CLK, PS2_MSE_DAT, 8> Mouse;
-uint8_t blink_bit = 8;
-uint8_t blink_counter = 0;
+uint16_t blink_clock = 0;
+uint8_t blink_count;
 
 void keyboardClockIrq() {
     Keyboard.onFallingClock();
@@ -218,8 +218,6 @@ void setup() {
     Mouse.begin(mouseClockIrq);
 }
 
-uint8_t mouse_init_state = 0;
-
 enum mouse_command
 {
   RESET = 0xFF,
@@ -234,105 +232,188 @@ enum mouse_command
   ENABLE = 0xF4
 };
 
+typedef enum MOUSE_INIT_STATE : uint8_t {
+  OFF = 0,
+  POWERUP_BAT_WAIT,
+  POWERUP_ID_WAIT,
+  PRE_RESET,
+  START_RESET,
+  RESET_ACK_WAIT,
+  RESET_BAT_WAIT,
+  RESET_ID_WAIT,
+  
+  SAMPLERATECMD_ACK_WAIT,
+  SAMPLERATE_ACK_WAIT,
+
+  ENABLE_ACK_WAIT,
+  MOUSE_INIT_DONE,
+  MOUSE_READY,
+  
+  FAILED = 255
+} MOUSE_INIT_STATE_T;
+
+#define MOUSE_WATCHDOG(x) \
+      watchdog_armed = true; \
+      watchdog_timer = 1023; \
+      watchdog_expire_state = (x)
+
+#define MOUSE_WATCHDOG_DISARM() watchdog_armed = false
+  
+MOUSE_INIT_STATE_T mouse_init_state = OFF;
 
 void MouseInitTick()
 {
-  if (SYSTEM_POWERED == 0)
+  static bool watchdog_armed = false;
+  static uint16_t watchdog_timer = 1023;
+  static MOUSE_INIT_STATE watchdog_expire_state = OFF;
+  
+  if (mouse_init_state != OFF && SYSTEM_POWERED == 0)
   {
-    mouse_init_state == 0;
+    mouse_init_state = OFF;
+    watchdog_armed = false;
+    watchdog_timer = 1023;
     return;
   }
-  uint8_t mstatus = Mouse.getCommandStatus();
-  if (mstatus == 1)
+  if (watchdog_armed) {
+    if (watchdog_timer == 0) {
+      mouse_init_state = watchdog_expire_state;
+      watchdog_armed = false;
+    }
+    else {
+      watchdog_timer--;
+    }
+  }
+  PS2_CMD_STATUS mstatus = Mouse.getCommandStatus();
+  if (mstatus == PS2_CMD_STATUS::CMD_PENDING)
   {
     return;
   }
   
   switch(mouse_init_state)
   {
-    case 0:
-      mouse_init_state++;
-      break;
-    case 1:
-      Mouse.flush();
-      mouse_init_state++;
-      break;
-  
-    case 2:             // SEND RESET
-      blink_bit = 6;
-      Mouse.sendPS2Command(1, mouse_command::RESET);
-      mouse_init_state++;
+    case OFF:
+      if (SYSTEM_POWERED != 0) {
+        mouse_init_state = POWERUP_BAT_WAIT;
+
+        // If we don't see the mouse respond, jump to sending it a reset.
+        MOUSE_WATCHDOG(START_RESET);
+      }
       break;
 
-    case 3:             // RECEIVE ACK
+    case POWERUP_BAT_WAIT:
+      if (Mouse.available()) {
+        uint8_t b = Mouse.next();
+        if (b == BAT_OK)
+        {
+          mouse_init_state = POWERUP_ID_WAIT;
+          MOUSE_WATCHDOG(START_RESET); // If we don't see the mouse respond, jump to sending it a reset.
+        } else if (b == BAT_FAIL) {
+          mouse_init_state = FAILED;
+        }
+      }
+      
+      break;
+      
+    case POWERUP_ID_WAIT:
+      if (Mouse.available()) {
+        uint8_t b = Mouse.next();
+        if (b == MOUSE_ID)
+        {
+          Mouse.sendPS2Command(mouse_command::SET_SAMPLE_RATE);
+          MOUSE_WATCHDOG(START_RESET);
+          mouse_init_state = SAMPLERATECMD_ACK_WAIT;
+        }
+        // Watchdog will eventually send us to START_RESET if we don't get MOUSE_ID
+      }
+      break;
+
+    case PRE_RESET:
+      mouse_init_state = START_RESET;
+      break;
+      
+    case START_RESET:
+      Mouse.flush();
+      Mouse.sendPS2Command(mouse_command::RESET);
+      MOUSE_WATCHDOG(FAILED);
+      mouse_init_state = RESET_ACK_WAIT;
+      break;
+
+    case RESET_ACK_WAIT:
       if (mstatus == mouse_command::ACK) {
         Mouse.next();
-        mouse_init_state++;
-      }
-      else {
-        blink_bit = 3;
-        mouse_init_state = 0; // Assume an error of some sort.
+        MOUSE_WATCHDOG(START_RESET);
+        mouse_init_state = RESET_BAT_WAIT;
+      } else {
+        mouse_init_state = FAILED; // Assume an error of some sort.
       }
       break;
       
-    case 4:           // RECEIVE BAT_OK
+    case RESET_BAT_WAIT:           // RECEIVE BAT_OK
       // expect self test OK
       if (Mouse.available()) {
         uint8_t b = Mouse.next();
         if ( b != mouse_command::BAT_OK ) {
-          blink_bit = 4;
-          mouse_init_state = 0;
+          mouse_init_state = FAILED;
         } else {
-          mouse_init_state++;
+          MOUSE_WATCHDOG(START_RESET);
+          mouse_init_state = RESET_ID_WAIT;
         }
       }
       break;
 
-    case 5:             // RECEIVE MOUSE_ID, SEND SET_SAMPLE_RATE
+    case RESET_ID_WAIT:             // RECEIVE MOUSE_ID, SEND SET_SAMPLE_RATE
       // expect mouse ID byte (0x00)
       if (Mouse.available()) {
         uint8_t b = Mouse.next();
         if ( b != mouse_command::MOUSE_ID ) {
-          mouse_init_state = 0;
+          mouse_init_state = FAILED;
         } else {
-          Mouse.sendPS2Command(1, mouse_command::SET_SAMPLE_RATE);
-          mouse_init_state++;
+          Mouse.sendPS2Command(mouse_command::SET_SAMPLE_RATE);
+          MOUSE_WATCHDOG(START_RESET);
+          mouse_init_state = SAMPLERATECMD_ACK_WAIT;
         }
       }
       break;
 
-    case 6:           // RECEIVE ACK, SEND 20 updates/sec
+    case SAMPLERATECMD_ACK_WAIT:           // RECEIVE ACK, SEND 20 updates/sec
       Mouse.next();
       if (mstatus != mouse_command::ACK)
-        mouse_init_state = 0;
+        mouse_init_state = PRE_RESET;   // ?? Try resetting again, I guess.
       else {
-        Mouse.sendPS2Command(1, 20);
-        mouse_init_state++;
+        Mouse.sendPS2Command(60);
+        MOUSE_WATCHDOG(START_RESET);
+        mouse_init_state = SAMPLERATE_ACK_WAIT;
       }
       break;
 
-    case 7:           // RECEIVE ACK, SEND ENABLE
+    case SAMPLERATE_ACK_WAIT:           // RECEIVE ACK, SEND ENABLE
       Mouse.next();
       if (mstatus != mouse_command::ACK)
-        mouse_init_state = 0;
+        mouse_init_state = PRE_RESET;
       else {
-        Mouse.sendPS2Command(1, mouse_command::ENABLE);
-        mouse_init_state++;
+        Mouse.sendPS2Command(mouse_command::ENABLE);
+        MOUSE_WATCHDOG(START_RESET);
+        mouse_init_state = ENABLE_ACK_WAIT;
       }
       break;
 
-    case 8:         // Receive ACK
+    case ENABLE_ACK_WAIT:         // Receive ACK
       Mouse.next();
-      if (mstatus != mouse_command::ACK)
-        mouse_init_state = 0;
-      else
-        mouse_init_state++;
+      if (mstatus != mouse_command::ACK) {
+        mouse_init_state = PRE_RESET;
+      } else {
+        mouse_init_state = MOUSE_INIT_DONE;
+        MOUSE_WATCHDOG_DISARM();
+      }
       break;
 
-    case 9:       // Mouse init idle
+    case MOUSE_INIT_DONE:
       // done
-      blink_bit = 8;
-      mouse_init_state++;
+      MOUSE_WATCHDOG_DISARM();
+      mouse_init_state = MOUSE_READY;
+      break;
+
+    case MOUSE_READY:
       break;
 
     default:
@@ -343,6 +424,7 @@ void MouseInitTick()
 uint16_t LED_last_on_ms = 0;
 
 void loop() {
+    static MOUSE_INIT_STATE_T last_good_mouse_state = 0;
     POW_BUT.tick();                             // Check Button Status
     RES_BUT.tick();
     //NMI_BUT.tick();
@@ -356,10 +438,6 @@ void loop() {
     }
 
     // DEBUG: turn activity LED on if there are keys in the keybuffer
-    //analogWrite(ACT_LED, Mouse.available() ? 255 : 0);
-    blink_counter++;
-    if ((blink_counter >> blink_bit) & 0x1 == 1) analogWrite(ACT_LED, 255);
-    else analogWrite(ACT_LED, 0);
     delay(10);                                  // Short Delay, required by OneButton if code is short   
 }
 
@@ -440,11 +518,11 @@ void I2C_Process() {
     
     if (I2C_Data[0] == 0x19){
       //Send command to keyboard (one byte)
-      Keyboard.sendPS2Command(1, I2C_Data[1], I2C_Data[2]);
+      Keyboard.sendPS2Command(I2C_Data[1]);
     }
     if (I2C_Data[0] == 0x1a){
       //Send command to keyboard (two bytes)
-      Keyboard.sendPS2Command(2, I2C_Data[1], I2C_Data[2]);
+      Keyboard.sendPS2Command(I2C_Data[1], I2C_Data[2]);
     }
 }
 
@@ -470,13 +548,24 @@ void I2C_Send() {
     }
     if (I2C_Data[0] == 0x21){
       //Get mouse packet
-      uint8_t buf[] = {0,0,0};
       if (Mouse.count()>2){
-        buf[0] = Mouse.next();
-        buf[1] = Mouse.next();
-        buf[2] = Mouse.next();
+          uint8_t buf[3];  
+          buf[0] = Mouse.next();
+      
+          if ((buf[0] & 0xc8) == 0x08){
+              //Valid first byte - Send mouse data packet
+              buf[1] = Mouse.next();
+              buf[2] = Mouse.next();
+              Wire.write(buf,3);
+          }
+          else{
+              //Invalid first byte - Discard, and return a 0
+              Wire.write(0);
+          }
       }
-      Wire.write(buf,3);
+      else{
+          Wire.write(0);
+      }
     }
 }
 
