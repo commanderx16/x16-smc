@@ -1,3 +1,5 @@
+#pragma once
+#include <Arduino.h>
 #define SCANCODE_TIMEOUT_MS 50
 
 enum PS2_CMD_STATUS : uint8_t {

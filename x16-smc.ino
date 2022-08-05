@@ -4,105 +4,22 @@
 //     Michael Steil
 //     Joe Burks
 
+//#define ENABLE_NMI_BUT
+
 #include <OneButton.h>
 #include <Wire.h>
-
-// Important: You need to turn OFF DEBUG in order for the i2c communication to work reliably!
-//#define DEBUG
-#define SERIAL_BPS 115200
-
-#if defined(__AVR_ATtiny861__)
-#define ATTINY861
-
-/*
-ATTINY861 Pinout
-     AVR Func         X16 Func   ArdIO   Port             Port   ArdIO   X16 Func    AVR Function
-                                              ----\_/----
-                                             | *         |
- (SPI MOSI) (SDA)      I2C_SDA     8     PB0 | 1       20| PA0     0     RESB
- (SPI MISO)            ACT_LED     9     PB1 | 2   A   19| PA1     1     NMIB
-  (SPI SCK) (SCL)      I2C_SCL    10     PB2 | 3   T   18| PA2     2     PS2_KBD_CLK
-                   PS2_KBD_DAT    11     PB3 | 4   t   17| PA3     3     NMI_BTN
-                                         VCC | 5   i   16| AGND
-                                         GND | 6   n   15| AVCC
-                     RESET_BTN    12     PB4 | 7   y   14| PA4     4     POWER_BTN
-                   PS2_MSE_DAT    13     PB5 | 8   8   13| PA5     5     POWER_ON
-                   PS2_MSE_CLK    14     PB6 | 9   6   12| PA6     6     POWER_OK       (TXD)
-  (SPI SS) (RST)                  15     PB7 |10   1   11| PA7     7     IRQB           (RXD)
-                                             |           |
-                                              -----------
- */
-
-
-#define I2C_SDA_PIN        8
-#define I2C_SCL_PIN       10
-
-#define PS2_KBD_CLK       2
-#define PS2_KBD_DAT       11
-#define PS2_MSE_CLK       14
-#define PS2_MSE_DAT       13
-
-#define NMI_BUTTON_PIN     3
-#define RESET_BUTTON_PIN   12
-#define POWER_BUTTON_PIN   4
-
-#define RESB_PIN          0
-#define NMIB_PIN          1
-#define IRQB_PIN          7
-
-#define PWR_ON            5
-#define PWR_OK            6
-
-#define ACT_LED           9
-
-#else
+#include "dbg_supp.h"
+#include "smc_pins.h"
+#include "ps2.h"
+#include "mouse.h"
 
 // If not ATtiny861, we expect ATMega328p
-#if !defined(__AVR_ATmega328P__)
+#if !defined(__AVR_ATmega328P__) && !defined(__AVR_ATtiny861__)
 #error "X16 SMC only builds for ATtiny861 and ATmega328P"
 #endif
 
-#if defined(DEBUG)
-#define USE_SERIAL_DEBUG
-#endif
-
-// Button definitions
-
-#define PS2_KBD_CLK       3  
-#define PS2_KBD_DAT       A3
-#define PS2_MSE_CLK       2
-#define PS2_MSE_DAT       A1
-
-#define I2C_SDA_PIN       A4
-#define I2C_SCL_PIN       A5
-
-#define NMI_BUTTON_PIN    A0
-#define RESET_BUTTON_PIN  A2
-#define POWER_BUTTON_PIN  4
-
-#define RESB_PIN          5
-#define NMIB_PIN          6
-#define IRQB_PIN          7
-
-#define PWR_ON            8
-#define PWR_OK            9
-
-#define ACT_LED           10
-
-#endif
-
-// Debug output macros
-#if defined(DEBUG) && defined(USE_SERIAL_DEBUG)
-#   define   DBG_PRINT(...) do { Serial.print(__VA_ARGS__); } while(0)
-#   define   DBG_PRINTLN(...) do { Serial.println(__VA_ARGS__); } while(0)
-#else
-    // Ensure that DBG_PRINT() with no ending semicolon doesn't compile when debugging is not enabled
-#   define DBG_PRINT(...) do {} while(0)
-#   define DBG_PRINTLN(...) do {} while(0)
-#endif
-
-#define PWR_ON_MIN             100
-#define PWR_ON_MAX             500
+#define PWR_ON_MIN_MS          100
+#define PWR_ON_MAX_MS          500
 // Hold PWR_ON low while computer is on.  High while off.
 // PWR_OK -> Should go high 100ms<->500ms after PWR_ON invoked.
 //           Any longer or shorter is considered a fault.
@@ -113,22 +30,20 @@ ATTINY861 Pinout
 #define ACT_LED_ON_LEVEL       255
 
 //Reset & NMI Lines
-#define RESB_HOLDTIME          500
-#define NMI_HOLDTIME           300
+#define RESB_HOLDTIME_MS       500
+#define NMI_HOLDTIME_MS        300
 
 //I2C Pins
 #define I2C_ADDR              0x42  // I2C Device ID
 
-#include "ps2.h"
-
 OneButton POW_BUT(POWER_BUTTON_PIN, true, true);
 OneButton RES_BUT(RESET_BUTTON_PIN, true, true);
-//OneButton NMI_BUT(NMI_BUTTON_PIN, true, true);
+#if defined(ENABLE_NMI_BUT)
+  OneButton NMI_BUT(NMI_BUTTON_PIN, true, true);
+#endif
 
 PS2Port<PS2_KBD_CLK, PS2_KBD_DAT, 16> Keyboard;
 PS2Port<PS2_MSE_CLK, PS2_MSE_DAT, 8> Mouse;
-uint16_t blink_clock = 0;
-uint8_t blink_count;
 
 void keyboardClockIrq() {
     Keyboard.onFallingClock();
@@ -137,6 +52,7 @@ void keyboardClockIrq() {
 void mouseClockIrq() {
     Mouse.onFallingClock();
 }
+void MouseInitTick();
 
 bool SYSTEM_POWERED = 0;                                // default state - Powered off
 int  I2C_Data[3] = {0, 0, 0};
@@ -147,6 +63,7 @@ void setup() {
 #if defined(USE_SERIAL_DEBUG)
     Serial.begin(SERIAL_BPS);
 #endif
+
     //Setup Timer 1 interrupt to run every 25 us >>>
     cli();
 
@@ -196,9 +113,10 @@ void setup() {
     RES_BUT.attachClick(Reset_Button_Press);            // Short Click = NMI, Long Press = Reset
     RES_BUT.attachDuringLongPress(Reset_Button_Hold);   // Actual Reset Call
 
-    //NMI_BUT.attachClick(Reset_Button_Press);            // NMI Call is the same as short Reset
-    //NMI_BUT.attachClick(HardReboot);                  // strangely, this works fine via NMI push, but fails via I2C?
-
+#if defined(ENABLE_NMI_BUT)
+    NMI_BUT.attachClick(Reset_Button_Press);            // NMI Call is the same as short Reset
+    NMI_BUT.attachClick(HardReboot);                  // strangely, this works fine via NMI push, but fails via I2C?
+#endif
 
     pinMode(PWR_OK, INPUT);
     pinMode(PWR_ON, OUTPUT);
@@ -210,224 +128,22 @@ void setup() {
     pinMode(RESB_PIN,OUTPUT);
     digitalWrite(RESB_PIN,LOW);                 // Hold Reset on statup
 
+#if defined(ENABLE_NMI_BUT)
     pinMode(NMIB_PIN,OUTPUT);
     digitalWrite(NMIB_PIN,HIGH);
+#endif
 
     // PS/2 host init
     Keyboard.begin(keyboardClockIrq);
     Mouse.begin(mouseClockIrq);
 }
 
-enum mouse_command
-{
-  RESET = 0xFF,
-  ACK = 0xFA,
-  BAT_OK = 0xAA,
-  BAT_FAIL = 0xFC,
-  MOUSE_ID = 0x00,
-  SET_SAMPLE_RATE = 0xF3,
-  READ_DEVICE_TYPE = 0xF2,
-  SET_RESOLUTION = 0xE8,
-  SET_SCALING = 0xE6,
-  ENABLE = 0xF4
-};
-
-typedef enum MOUSE_INIT_STATE : uint8_t {
-  OFF = 0,
-  POWERUP_BAT_WAIT,
-  POWERUP_ID_WAIT,
-  PRE_RESET,
-  START_RESET,
-  RESET_ACK_WAIT,
-  RESET_BAT_WAIT,
-  RESET_ID_WAIT,
-  
-  SAMPLERATECMD_ACK_WAIT,
-  SAMPLERATE_ACK_WAIT,
-
-  ENABLE_ACK_WAIT,
-  MOUSE_INIT_DONE,
-  MOUSE_READY,
-  
-  FAILED = 255
-} MOUSE_INIT_STATE_T;
-
-#define MOUSE_WATCHDOG(x) \
-      watchdog_armed = true; \
-      watchdog_timer = 1023; \
-      watchdog_expire_state = (x)
-
-#define MOUSE_WATCHDOG_DISARM() watchdog_armed = false
-  
-MOUSE_INIT_STATE_T mouse_init_state = OFF;
-
-void MouseInitTick()
-{
-  static bool watchdog_armed = false;
-  static uint16_t watchdog_timer = 1023;
-  static MOUSE_INIT_STATE watchdog_expire_state = OFF;
-  
-  if (mouse_init_state != OFF && SYSTEM_POWERED == 0)
-  {
-    mouse_init_state = OFF;
-    watchdog_armed = false;
-    watchdog_timer = 1023;
-    return;
-  }
-  if (watchdog_armed) {
-    if (watchdog_timer == 0) {
-      mouse_init_state = watchdog_expire_state;
-      watchdog_armed = false;
-    }
-    else {
-      watchdog_timer--;
-    }
-  }
-  PS2_CMD_STATUS mstatus = Mouse.getCommandStatus();
-  if (mstatus == PS2_CMD_STATUS::CMD_PENDING)
-  {
-    return;
-  }
-  
-  switch(mouse_init_state)
-  {
-    case OFF:
-      if (SYSTEM_POWERED != 0) {
-        mouse_init_state = POWERUP_BAT_WAIT;
-
-        // If we don't see the mouse respond, jump to sending it a reset.
-        MOUSE_WATCHDOG(START_RESET);
-      }
-      break;
-
-    case POWERUP_BAT_WAIT:
-      if (Mouse.available()) {
-        uint8_t b = Mouse.next();
-        if (b == BAT_OK)
-        {
-          mouse_init_state = POWERUP_ID_WAIT;
-          MOUSE_WATCHDOG(START_RESET); // If we don't see the mouse respond, jump to sending it a reset.
-        } else if (b == BAT_FAIL) {
-          mouse_init_state = FAILED;
-        }
-      }
-      
-      break;
-      
-    case POWERUP_ID_WAIT:
-      if (Mouse.available()) {
-        uint8_t b = Mouse.next();
-        if (b == MOUSE_ID)
-        {
-          Mouse.sendPS2Command(mouse_command::SET_SAMPLE_RATE);
-          MOUSE_WATCHDOG(START_RESET);
-          mouse_init_state = SAMPLERATECMD_ACK_WAIT;
-        }
-        // Watchdog will eventually send us to START_RESET if we don't get MOUSE_ID
-      }
-      break;
-
-    case PRE_RESET:
-      mouse_init_state = START_RESET;
-      break;
-      
-    case START_RESET:
-      Mouse.flush();
-      Mouse.sendPS2Command(mouse_command::RESET);
-      MOUSE_WATCHDOG(FAILED);
-      mouse_init_state = RESET_ACK_WAIT;
-      break;
-
-    case RESET_ACK_WAIT:
-      if (mstatus == mouse_command::ACK) {
-        Mouse.next();
-        MOUSE_WATCHDOG(START_RESET);
-        mouse_init_state = RESET_BAT_WAIT;
-      } else {
-        mouse_init_state = FAILED; // Assume an error of some sort.
-      }
-      break;
-      
-    case RESET_BAT_WAIT:           // RECEIVE BAT_OK
-      // expect self test OK
-      if (Mouse.available()) {
-        uint8_t b = Mouse.next();
-        if ( b != mouse_command::BAT_OK ) {
-          mouse_init_state = FAILED;
-        } else {
-          MOUSE_WATCHDOG(START_RESET);
-          mouse_init_state = RESET_ID_WAIT;
-        }
-      }
-      break;
-
-    case RESET_ID_WAIT:             // RECEIVE MOUSE_ID, SEND SET_SAMPLE_RATE
-      // expect mouse ID byte (0x00)
-      if (Mouse.available()) {
-        uint8_t b = Mouse.next();
-        if ( b != mouse_command::MOUSE_ID ) {
-          mouse_init_state = FAILED;
-        } else {
-          Mouse.sendPS2Command(mouse_command::SET_SAMPLE_RATE);
-          MOUSE_WATCHDOG(START_RESET);
-          mouse_init_state = SAMPLERATECMD_ACK_WAIT;
-        }
-      }
-      break;
-
-    case SAMPLERATECMD_ACK_WAIT:           // RECEIVE ACK, SEND 20 updates/sec
-      Mouse.next();
-      if (mstatus != mouse_command::ACK)
-        mouse_init_state = PRE_RESET;   // ?? Try resetting again, I guess.
-      else {
-        Mouse.sendPS2Command(60);
-        MOUSE_WATCHDOG(START_RESET);
-        mouse_init_state = SAMPLERATE_ACK_WAIT;
-      }
-      break;
-
-    case SAMPLERATE_ACK_WAIT:           // RECEIVE ACK, SEND ENABLE
-      Mouse.next();
-      if (mstatus != mouse_command::ACK)
-        mouse_init_state = PRE_RESET;
-      else {
-        Mouse.sendPS2Command(mouse_command::ENABLE);
-        MOUSE_WATCHDOG(START_RESET);
-        mouse_init_state = ENABLE_ACK_WAIT;
-      }
-      break;
-
-    case ENABLE_ACK_WAIT:         // Receive ACK
-      Mouse.next();
-      if (mstatus != mouse_command::ACK) {
-        mouse_init_state = PRE_RESET;
-      } else {
-        mouse_init_state = MOUSE_INIT_DONE;
-        MOUSE_WATCHDOG_DISARM();
-      }
-      break;
-
-    case MOUSE_INIT_DONE:
-      // done
-      MOUSE_WATCHDOG_DISARM();
-      mouse_init_state = MOUSE_READY;
-      break;
-
-    case MOUSE_READY:
-      break;
-
-    default:
-      break;
-  }
-}
-
-uint16_t LED_last_on_ms = 0;
-
 void loop() {
-    static MOUSE_INIT_STATE_T last_good_mouse_state = 0;
     POW_BUT.tick();                             // Check Button Status
     RES_BUT.tick();
-    //NMI_BUT.tick();
+#if defined(ENABLE_NMI_BUT)
+    NMI_BUT.tick();
+#endif
     MouseInitTick();
     
     if ((SYSTEM_POWERED == 1) && (!digitalRead(PWR_OK)))
@@ -572,19 +288,19 @@ void I2C_Send() {
 void Reset_Button_Hold() {
     Keyboard.flush();
     Mouse.reset();
-    analogWrite(ACT_LED, 0);
-    mouse_init_state = 0;
     if (SYSTEM_POWERED == 1) {                  // Ignore unless Powered On
         digitalWrite(RESB_PIN,LOW);             // Press RESET
-        delay(RESB_HOLDTIME);
+        delay(RESB_HOLDTIME_MS);
         digitalWrite(RESB_PIN,HIGH);
+        analogWrite(ACT_LED, 0);
+        mouse_init_state = 0;
     }
 }
 
 void Reset_Button_Press() {
     if (SYSTEM_POWERED == 1) {                  // Ignore unless Powered On
         digitalWrite(NMIB_PIN,LOW);             // Press NMI
-        delay(NMI_HOLDTIME);
+        delay(NMI_HOLDTIME_MS);
         digitalWrite(NMIB_PIN,HIGH);
     }
 }
@@ -593,7 +309,7 @@ void PowerOffSeq() {
     digitalWrite(PWR_ON, HIGH);                 // Turn off supply
     SYSTEM_POWERED=0;                           // Global Power state Off
     digitalWrite(RESB_PIN,LOW);
-    delay(RESB_HOLDTIME);                       // Mostly here to add some delay between presses
+    delay(RESB_HOLDTIME_MS);                    // Mostly here to add some delay between presses
 }
 
 void PowerOnSeq() {
@@ -603,13 +319,13 @@ void PowerOnSeq() {
     while (!digitalRead(PWR_OK)) {              // Time how long it takes
         TimeDelta=millis() - StartTime;         // for PWR_OK to go active.
     }
-    if ((PWR_ON_MIN > TimeDelta) || (PWR_ON_MAX < TimeDelta)) {
+    if ((PWR_ON_MIN_MS > TimeDelta) || (PWR_ON_MAX_MS < TimeDelta)) {
         PowerOffSeq();                          // FAULT! Turn off supply
         // insert error handler, flash activity light & Halt?   IE, require hard power off before continue?
     }
     else {
         SYSTEM_POWERED=1;                       // Global Power state On
-        delay(RESB_HOLDTIME);                   // Allow system to stabilize
+        delay(RESB_HOLDTIME_MS);                // Allow system to stabilize
         digitalWrite(RESB_PIN,HIGH);            // Release Reset
     }
 }
